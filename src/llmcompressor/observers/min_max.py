@@ -14,14 +14,18 @@ __all__ = ["MinMaxObserver", "MovingAverageMinMaxObserver"]
 class MinMaxObserver(Observer):
     """
     Implements a quantization observer that calculates scale and zero point based on the
-    minimum and maximum values of the tensor being observed. If averaging_constant is
-    specified, then the scales are updated using a moving average
+    minimum and maximum values of the tensor being observed.
+    averaging_constant is used to trigger moving average of min and max values,
+    following the formula:
+    new_val = tracked_val + averaging_constant * (observed_val - tracked_val)
+    Default behavior is to disable averaging, and return the observed absolute
+    min and max values.
     """
 
     def __init__(
         self,
         quantization_args: QuantizationArgs,
-        averaging_constant: float = 0.01,
+        averaging_constant: Optional[float] = None,
         **kwargs,
     ):
         super().__init__(quantization_args=quantization_args)
@@ -37,8 +41,9 @@ class MinMaxObserver(Observer):
         tensor_id: Optional[Any] = None,
     ):
         """
-        Updates the observed min and max using a moving average smoothed by the
-        averaging_constant. Set the averaging_constant to 1.0 to disable averaging.
+        Updates the observed min and max by either tracking the observed absolute
+        min and max values (averaging_constant = None) or by using a moving average
+        smoothed by the averaging_constant.
 
         :param observed: observed tensor to calculate quantization parameters for
         :param reduce_dims: optional tuple of dimensions to reduce along,
@@ -51,27 +56,26 @@ class MinMaxObserver(Observer):
         tensor_id = tensor_id or "default"
 
         if not reduce_dims:
-            min_val, max_val = torch.aminmax(observed)
+            observed_min_val, observed_max_val = torch.aminmax(observed)
         else:
-            min_val = torch.amin(observed, dim=reduce_dims, keepdims=True)
-            max_val = torch.amax(observed, dim=reduce_dims, keepdims=True)
+            observed_min_val = torch.amin(observed, dim=reduce_dims, keepdims=True)
+            observed_max_val = torch.amax(observed, dim=reduce_dims, keepdims=True)
 
-        # early stopping, save some computation and memory
-        if self.averaging_constant == 1.0:
-            return min_val, max_val
+        tracked_min_val = self.min_val.get(tensor_id, None)
+        tracked_max_val = self.max_val.get(tensor_id, None)
 
-        running_min_val = self.min_val.get(tensor_id, None)
-        running_max_val = self.max_val.get(tensor_id, None)
-
-        if running_min_val is None or running_max_val is None:
-            updated_min_val = min_val
-            updated_max_val = max_val
-        else:
-            updated_min_val = running_min_val + self.averaging_constant * (
-                min_val - running_min_val
+        if tracked_min_val is None or tracked_max_val is None:
+            updated_min_val = observed_min_val
+            updated_max_val = observed_max_val
+        elif self.averaging_constant is None:  # tracking absolute min and max
+            updated_min_val = torch.minimum(observed_min_val, tracked_min_val)
+            updated_max_val = torch.maximum(observed_max_val, tracked_max_val)
+        else:  # tracking moving average of min and max
+            updated_min_val = tracked_min_val + self.averaging_constant * (
+                observed_min_val - tracked_min_val
             )
-            updated_max_val = running_max_val + self.averaging_constant * (
-                max_val - running_max_val
+            updated_max_val = tracked_max_val + self.averaging_constant * (
+                observed_max_val - tracked_max_val
             )
 
         self.min_val[tensor_id] = updated_min_val

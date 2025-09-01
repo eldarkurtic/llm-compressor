@@ -14,7 +14,12 @@ __all__ = ["MovingAverageMSEObserver"]
 class MovingAverageMSEObserver(Observer):
     """
     Implements a dynamic quantization observer that sets the scale and
-    zero point based on a moving average of the mse-clipped min and max observed values
+    zero point based on a (optional) moving average of the mse-clipped min and max
+    observed values.
+    averaging_constant is used to trigger moving average of min and max values,
+    following the formula:
+    new_val = tracked_val + averaging_constant * (observed_val - tracked_val)
+    Default behavior is to disable averaging.
     """
 
     def __init__(
@@ -22,7 +27,7 @@ class MovingAverageMSEObserver(Observer):
         quantization_args: QuantizationArgs,
         maxshrink: float = 0.2,
         patience: int = 5,
-        averaging_constant: float = 0.01,
+        averaging_constant: Optional[float] = None,
         grid: float = 100.0,
         norm: float = 2.4,
         **kwargs,
@@ -132,22 +137,25 @@ class MovingAverageMSEObserver(Observer):
         """
         # TODO: will need to be expanded to support fp4 activations;
         # currently not supported
-        min_val, max_val = self.calculate_mse_min_max(
+        observed_min_val, observed_max_val = self.calculate_mse_min_max(
             observed, reduce_dims, global_scale=global_scale
         )
 
-        running_min_val = self.min_val.get(tensor_id, None)
-        running_max_val = self.max_val.get(tensor_id, None)
+        tracked_min_val = self.min_val.get(tensor_id, None)
+        tracked_max_val = self.max_val.get(tensor_id, None)
 
-        if running_min_val is None or running_max_val is None:
-            updated_min_val = min_val
-            updated_max_val = max_val
-        else:
-            updated_min_val = running_min_val + self.averaging_constant * (
-                min_val - running_min_val
+        if tracked_min_val is None or tracked_max_val is None:
+            updated_min_val = observed_min_val
+            updated_max_val = observed_max_val
+        elif self.averaging_constant is None:  # tracking absolute min and max
+            updated_min_val = torch.minimum(observed_min_val, tracked_min_val)
+            updated_max_val = torch.maximum(observed_max_val, tracked_max_val)
+        else:  # tracking moving average of min and max
+            updated_min_val = tracked_min_val + self.averaging_constant * (
+                observed_min_val - tracked_min_val
             )
-            updated_max_val = running_max_val + self.averaging_constant * (
-                max_val - running_max_val
+            updated_max_val = tracked_max_val + self.averaging_constant * (
+                observed_max_val - tracked_max_val
             )
 
         tensor_id = tensor_id or "default"

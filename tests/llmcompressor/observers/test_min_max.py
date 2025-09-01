@@ -84,7 +84,7 @@ def test_min_max_observer_value_update():
     num_bits = 8
     weights = QuantizationArgs(num_bits=num_bits, symmetric=True, observer="minmax")
     observer = weights.observer
-    observer = Observer.load_from_registry(observer, quantization_args=weights)
+    observer = Observer.load_from_registry(observer, quantization_args=weights, averaging_constant=0.01)
     curr_max = 1
     curr_min = 1
     for i, tensor in enumerate(tensors):
